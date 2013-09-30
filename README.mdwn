@@ -1,0 +1,209 @@
+# OpenMAX IL demos for Raspberry Pi
+
+I wanted to develop a program that utilizes
+[the RaspiCam camera board for the Raspberry Pi](http://www.raspberrypi.org/archives/tag/camera).
+[The Raspberry Pi Foundation](http://www.raspberrypi.org/about) provides
+[RaspiVid command-line application](https://github.com/raspberrypi/userland/blob/master/host_applications/linux/apps/raspicam/RaspiVid.c)
+that can record video using the RaspiCam. However, this wasn't flexible enough
+for my needs so I decided to learn how one can utilize the RaspiCam
+programmatically from within one's own application code.
+
+Initially I had no idea what would be needed. I did my research and found out
+that you could use OpenMAX IL API to drive the RaspiCam and VideoCore hardware
+video encoder on the RaspberryPi to get H.264 encoded high-definition video out
+of the system in real time.
+
+So I spent countless of hours reading the OpenMAX IL API specification and some
+existing code using OpenMAX IL API (see [References] section below). However,
+it was all very difficult to understand due to the complexity of the spec and
+layering of the sample code. I wanted to go to the basics and write trivial,
+uncapsulated demo code in order to learn how things fundamentally worked.
+
+And here is the result. Because of the lack of simple sample code I decided to
+document, package and share my work. Maybe it helps other people in similar
+situation.
+
+## Downloading
+
+OpenMAX IL demos for Raspberry Pi home page is at
+<http://solitudo.net/software/raspberrypi/rpi-openmax-demos/> and it can be
+downloaded by cloning the public Git repository at
+`git://scm.solitudo.net/rpi-openmax-demos.git`.
+Gitweb interface is available at
+<http://scm.solitudo.net/gitweb/public/rpi-openmax-demos.git>.
+The software is also available at [GitHub](https://github.com) page
+<https://github.com/tjormola/rpi-openmax-demos/>.
+
+## Installation
+
+This code has been developed and tested on [Raspbian](http://www.raspbian.org)
+operating system running on Raspberry Pi Model B Rev. 1.0. You need the
+standard GCC compiler toolchain, GNU Make and Raspberry Pi system libraries
+development files installed, i.e. the following packages must be installed.
+
+    gcc make libraspberrypi-dev
+
+The binaries can be then compiled by running `make` command in the cloned Git
+repository base directory. No special installation is required, you can just
+run the self-contained binaries directly from the source directory.
+
+## Code structure
+
+This is not elegant or efficient code. It's aiming to be as simple as possible
+and each demo program is fully self-contained. That means hundreds of lines of
+duplicated helper and boiler-plate code in each demo program source code file.
+The relevant OpenMAX IL code is all sequentally placed inside a single main
+routine in each demo program in order to make it simple to follow what is
+happening. Error handling is dead simple - if something goes wrong, report the
+error and exit immediatelly. Other anti-patterns, such as busy waiting instead
+of proper signaling based control of the flow of execution, are also emloyed in
+the name of simplicity. Try not to be distracted by these flaws. This code is
+not for production usage but to show how things work in a simple way.
+
+The program flow in each demo program goes as described here.
+
+1. Comment header with usage instructions
+1. Hard-coded configuration parameters
+1. General helper routines
+1. Signal and event handler routines
+1. Main routine implementing the program logic
+    1. Initialization
+    1. Component creation
+    1. Component configuration
+    1. Enable component execution
+        1. Tunneling of the subsequent components in the pipeline
+        1. Enabling of relevant component ports
+        1. Changing of the component states
+    1. Buffer allocation
+    1. Main program loop
+    1. Clean up and resource de-allocation
+        1. Flushing of the buffers
+        1. Disabling of relevant component ports
+        1. De-allocation of the buffers
+        1. Changing of the component states
+        1. De-allocation of the component handles
+    1. Program exit
+
+## Usage
+
+This section describes each program included in this demo bundle. Common to
+each program is that any data is written to `stdout` and read from `stdin`.
+Quite verbose status messages are printed to `stderr`. There is no command-line
+switches. All configuration is hard-coded and can be found at the top of the
+each `.c` source code file. Execution of each program can be stopped by sending
+`INT`, `TERM` or `QUIT` signal to the process e.g. by pressing `Ctrl-C` when
+the program is running.
+
+### rpi-camera-encode
+
+`rpi-camera-encode` records video using the RaspiCam module and encodes the
+stream using the VideoCore hardware encoder using H.264 codec. The raw H.264
+stream is emitted to `stdout`. In order to properly display the encoded video,
+it must be wrapped inside a container format, e.g.
+[Matroska](http://matroska.org/technical/specs/).
+
+The following exaple uses `mkvmerge` tool from the
+[MKVToolNix](http://www.bunkus.org/videotools/mkvtoolnix/) software package to
+create a Matroska video file from the recorded H.264 file and then play it using
+[omxplayer](https://github.com/huceke/omxplayer) (although omxplayer happens to
+deal also with the raw H.264 stream, but generally other players, such
+[avplay](http://libav.org/avplay.html), don't).
+
+    $ ./rpi-camera-encode >test.h264
+    # Press Ctrl-C to interrupt the recording...
+    $ mkvmerge -o test.mkv test.h264
+    $ omxplayer test.mkv
+
+`rpi-camera-encode` uses `camera`, `video_encode` and `null_sink` components.
+`camera` video output port is tunneled to `video_encode` input port and
+`camera` preview output port is tunneled to `null_sink` input port. H.264
+encoded video is read from the buffer of `video_encode` output port and dumped
+to `stdout`.
+
+### rpi-camera-playback
+
+`rpi-camera-playback` records video using the RaspiCam module and displays it
+on the Raspberry Pi frame buffer display device, i.e. it should be run on the
+Raspbian console.
+
+    $ ./rpi-camera-playback
+
+`rpi-camera-playback` uses `camera`, `video_render` and `null_sink` components.
+`camera` video output port is tunneled to `video_render` input port and
+`camera` preview output port is tunneled to `null_sink` input port.
+`video_render` component uses a display region to show the video on local
+display.
+
+### rpi-camera-dump-yuv
+
+`rpi-camera-dump-yuv` records video using the RaspiCam module and dumps the raw
+YUV frame data to `stdout`.
+
+    $ ./rpi-camera-dump-yuv >test.yuv
+
+`rpi-camera-dump-yuv` uses `camera` and `null_sink` components. Uncompressed
+raw YUV frame data is read from the buffer of `camera` video output port and
+dumped to stdout and `camera` preview output port is tunneled to `null_sink`
+input port.
+
+Also see the [Bugs] section below.
+
+### rpi-encode-yuv
+
+`rpi-encode-yuv` reads raw YUV frame data from `stdin`, encodes the stream
+using the VideoCore hardware encoder using H.264 codec and emits the H.264
+stream to `stdout`.
+
+    $ ./rpi-encode-yuv <test.yuv >test.h264
+
+`rpi-encode-yuv` uses the `video_encode` component. Uncompressed raw YUV frame
+data is read from `stdin` and passed to the buffer of input port of
+`video_encode`. H.264 encoded video is read from the buffer of `video_encode`
+output port and dumped to `stdout`.
+
+Also see the [Bugs] section below.
+
+## Bugs
+
+The YUV frame data emitted by `rpi-camera-dump-yuv` is not compatible with the
+encoding setup used in `rpi-encode-yuv`. The resulting H.264 encoded video is
+disorted and greenish, i.e. this produces corrupted video:
+
+    $ ./rpi-camera-dump-yuv | ./rpi-encode-yuv >test.h264
+
+I don't understand why, because defaults are being used at both ends.
+`rpi-camera-encode`, which does essentially the same thing but inside the
+VideoCore pipeline, works just great. Someone please help me with this ;)
+
+There's probably many bugs in component configuration and freeing of resources
+and also buffer management (things done in incorrect order etc.). Feel free to
+submit patches in order to clean things up.
+
+## References
+
+The following resources on the Web were studied and found to be useful when
+this code was developed.
+
+1. [OpenMAX™ Integration Layer Application Programming Interface Version 1.1.2](http://www.khronos.org/registry/omxil/specs/OpenMAX_IL_1_1_2_Specification.pdf). [The Khronos Group Inc.](http://www.khronos.org), 2008. URL <http://www.khronos.org/registry/omxil/specs/OpenMAX_IL_1_1_2_Specification.pdf>.
+1. [The OpenMAX Integration Layer standard](http://elinux.org/images/e/e0/The_OpenMAX_Integration_Layer_standard.pdf). Giulio Urlini <giulio.urlini@st.com> ([Advanced System Technology](http://www.st.com)). URL <http://elinux.org/images/e/e0/The_OpenMAX_Integration_Layer_standard.pdf>.
+1. [VMCS-X OpenMAX IL Components](https://github.com/raspberrypi/firmware/tree/master/documentation/ilcomponents). [The Raspberry Pi Foundation](http://www.raspberrypi.org/about). URL <https://github.com/raspberrypi/firmware/tree/master/documentation/ilcomponents>.
+1. [RaspiCam Documentation](http://www.raspberrypi.org/wp-content/uploads/2013/07/RaspiCam-Documentation.pdf). [The Raspberry Pi Foundation](http://www.raspberrypi.org/about). URL <http://www.raspberrypi.org/wp-content/uploads/2013/07/RaspiCam-Documentation.pdf>
+1. [Source code for the RaspiVid application](https://github.com/raspberrypi/userland/tree/master/host_applications/linux/apps/raspicam). [The Raspberry Pi Foundation](http://www.raspberrypi.org/about). URL <https://github.com/raspberrypi/userland/tree/master/host_applications/linux/apps/raspicam>.
+1. [`hello_pi` sample application collection](https://github.com/raspberrypi/userland/tree/master/host_applications/linux/apps/hello_pi). [The Raspberry Pi Foundation](http://www.raspberrypi.org/about). URL <https://github.com/raspberrypi/userland/tree/master/host_applications/linux/apps/hello_pi>.
+1. [Source code for `pidvbip` tvheadend client for the Raspberry Pi](https://github.com/linuxstb/pidvbip). Dave Chapman, [Raspberry Pi client for tvheaden](http://pidvbip.org). URL <https://github.com/linuxstb/pidvbip>.
+
+# Copyright and licensing
+
+Copyright © 2013 Tuomas Jormola <tj@solitudo.net> <http://solitudo.net>
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+<http://www.apache.org/licenses/LICENSE-2.0>
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
