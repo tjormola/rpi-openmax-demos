@@ -783,6 +783,7 @@ int main(int argc, char **argv) {
     signal(SIGINT,  signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGQUIT, signal_handler);
+
     while(!want_quit) {
         // Would be better to use signaling here but hey this works too
         usleep(1000);
