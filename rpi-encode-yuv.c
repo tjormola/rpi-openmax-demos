@@ -607,11 +607,13 @@ int main(int argc, char **argv) {
 
     say("Enter encode loop, press Ctrl-C to quit...");
 
+    int input_available = 1, frame_in = 0, frame_out = 0;
+    ctx.encoder_input_buffer_needed = 1;
+
     signal(SIGINT,  signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGQUIT, signal_handler);
-    int input_available = 1, frame_in = 0, frame_out = 0;
-    ctx.encoder_input_buffer_needed = 1;
+
     while(1) {
         // empty_input_buffer_done_handler() has marked that there's
         // a need for a buffer to be filled by us

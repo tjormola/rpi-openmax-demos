@@ -755,10 +755,12 @@ int main(int argc, char **argv) {
 
     say("Enter capture loop, press Ctrl-C to quit...");
 
+    int quit_detected = 0, quit_in_frame_boundry = 0, frame = 1, need_next_buffer_to_be_filled = 1;
+
     signal(SIGINT,  signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGQUIT, signal_handler);
-    int quit_detected = 0, quit_in_frame_boundry = 0, frame = 1, need_next_buffer_to_be_filled = 1;
+
     while(1) {
         // fill_output_buffer_done_handler() has marked that there's
         // a buffer for us to flush
