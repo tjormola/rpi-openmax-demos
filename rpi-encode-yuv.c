@@ -511,6 +511,8 @@ int main(int argc, char **argv) {
     encoder_portdef.format.video.nFrameWidth  = VIDEO_WIDTH;
     encoder_portdef.format.video.nFrameHeight = VIDEO_HEIGHT;
     encoder_portdef.format.video.xFramerate   = VIDEO_FRAMERATE << 16;
+    // Stolen from gstomxvideodec.c of gst-omx
+    encoder_portdef.format.video.nStride      = (encoder_portdef.format.video.nFrameWidth + encoder_portdef.nBufferAlignment - 1) & (~(encoder_portdef.nBufferAlignment - 1));
     encoder_portdef.format.video.eColorFormat = OMX_COLOR_FormatYUV420PackedPlanar;
     if((r = OMX_SetParameter(ctx.encoder, OMX_IndexParamPortDefinition, &encoder_portdef)) != OMX_ErrorNone) {
         omx_die(r, "Failed to set port definition for encoder input port 200");

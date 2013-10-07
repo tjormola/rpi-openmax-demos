@@ -553,7 +553,9 @@ int main(int argc, char **argv) {
     camera_portdef.format.video.nFrameWidth  = VIDEO_WIDTH;
     camera_portdef.format.video.nFrameHeight = VIDEO_HEIGHT;
     camera_portdef.format.video.xFramerate   = VIDEO_FRAMERATE << 16;
-    camera_portdef.format.video.nStride      = camera_portdef.format.image.nFrameWidth;
+    // Stolen from gstomxvideodec.c of gst-omx
+    camera_portdef.format.video.nStride      = (camera_portdef.format.video.nFrameWidth + camera_portdef.nBufferAlignment - 1) & (~(camera_portdef.nBufferAlignment - 1));
+    camera_portdef.format.video.eColorFormat = OMX_COLOR_FormatYUV420PackedPlanar;
     if((r = OMX_SetParameter(ctx.camera, OMX_IndexParamPortDefinition, &camera_portdef)) != OMX_ErrorNone) {
         omx_die(r, "Failed to set port definition for camera preview output port 70");
     }
