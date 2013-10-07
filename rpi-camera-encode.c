@@ -847,6 +847,7 @@ int main(int argc, char **argv) {
     say("Enter capture and encode loop, press Ctrl-C to quit...");
 
     int quit_detected = 0, quit_in_keyframe = 0, need_next_buffer_to_be_filled = 1;
+    size_t output_written;
 
     signal(SIGINT,  signal_handler);
     signal(SIGTERM, signal_handler);
@@ -873,7 +874,7 @@ int main(int argc, char **argv) {
                 break;
             }
             // Flush buffer to output file
-            size_t output_written = fwrite(ctx.encoder_ppBuffer_out->pBuffer + ctx.encoder_ppBuffer_out->nOffset, 1, ctx.encoder_ppBuffer_out->nFilledLen, ctx.fd_out);
+            output_written = fwrite(ctx.encoder_ppBuffer_out->pBuffer + ctx.encoder_ppBuffer_out->nOffset, 1, ctx.encoder_ppBuffer_out->nFilledLen, ctx.fd_out);
             if(output_written != ctx.encoder_ppBuffer_out->nFilledLen) {
                 die("Failed to write to output file: %s", strerror(errno));
             }
