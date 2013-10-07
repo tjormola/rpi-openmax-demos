@@ -322,7 +322,7 @@ static void dump_portdef(OMX_PARAM_PORTDEFINITIONTYPE* portdef) {
     }
 }
 
-static void dump_port(OMX_HANDLETYPE hComponent, OMX_U32 nPortIndex) {
+static void dump_port(OMX_HANDLETYPE hComponent, OMX_U32 nPortIndex, OMX_BOOL dumpformats) {
     OMX_ERRORTYPE r;
     OMX_PARAM_PORTDEFINITIONTYPE portdef;
     OMX_INIT_STRUCTURE(portdef);
@@ -331,6 +331,20 @@ static void dump_port(OMX_HANDLETYPE hComponent, OMX_U32 nPortIndex) {
         omx_die(r, "Failed to get port definition for port %d", nPortIndex);
     }
     dump_portdef(&portdef);
+    if(dumpformats) {
+        OMX_VIDEO_PARAM_PORTFORMATTYPE portformat;
+        OMX_INIT_STRUCTURE(portformat);
+        portformat.nPortIndex = nPortIndex;
+        portformat.nIndex = 0;
+        r = OMX_ErrorNone;
+        say("Port %d supports these video formats:", nPortIndex);
+        while(r == OMX_ErrorNone) {
+        if((r = OMX_GetParameter(hComponent, OMX_IndexParamVideoPortFormat, &portformat)) == OMX_ErrorNone) {
+                say("\t%s, compression: %s", dump_color_format(portformat.eColorFormat), dump_compression_format(portformat.eCompressionFormat));
+                portformat.nIndex++;
+            }
+        }
+    }
 }
 
 // Some busy loops to verify we're running in order
@@ -505,11 +519,11 @@ int main(int argc, char **argv) {
     say("Configuring camera...");
 
     say("Default port definition for camera input port 73");
-    dump_port(ctx.camera, 73);
+    dump_port(ctx.camera, 73, OMX_TRUE);
     say("Default port definition for camera preview output port 70");
-    dump_port(ctx.camera, 70);
+    dump_port(ctx.camera, 70, OMX_TRUE);
     say("Default port definition for camera video output port 71");
-    dump_port(ctx.camera, 71);
+    dump_port(ctx.camera, 71, OMX_TRUE);
 
     // Request a callback to be made when OMX_IndexParamCameraDeviceNumber is
     // changed signaling that the camera device is ready for use.
@@ -658,9 +672,9 @@ int main(int argc, char **argv) {
     say("Configuring encoder...");
 
     say("Default port definition for encoder input port 200");
-    dump_port(ctx.encoder, 200);
+    dump_port(ctx.encoder, 200, OMX_TRUE);
     say("Default port definition for encoder output port 201");
-    dump_port(ctx.encoder, 201);
+    dump_port(ctx.encoder, 201, OMX_TRUE);
 
     // Encoder input port definition is done automatically upon tunneling
 
@@ -703,7 +717,7 @@ int main(int argc, char **argv) {
     say("Configuring null sink...");
 
     say("Default port definition for null sink input port 240");
-    dump_port(ctx.null_sink, 240);
+    dump_port(ctx.null_sink, 240, OMX_TRUE);
 
     // Null sink input port definition is done automatically upon tunneling
 
@@ -816,17 +830,17 @@ int main(int argc, char **argv) {
     }
 
     say("Configured port definition for camera input port 73");
-    dump_port(ctx.camera, 73);
+    dump_port(ctx.camera, 73, OMX_FALSE);
     say("Configured port definition for camera preview output port 70");
-    dump_port(ctx.camera, 70);
+    dump_port(ctx.camera, 70, OMX_FALSE);
     say("Configured port definition for camera video output port 71");
-    dump_port(ctx.camera, 71);
+    dump_port(ctx.camera, 71, OMX_FALSE);
     say("Configured port definition for encoder input port 200");
-    dump_port(ctx.encoder, 200);
+    dump_port(ctx.encoder, 200, OMX_FALSE);
     say("Configured port definition for encoder output port 201");
-    dump_port(ctx.encoder, 201);
+    dump_port(ctx.encoder, 201, OMX_FALSE);
     say("Configured port definition for null sink input port 240");
-    dump_port(ctx.null_sink, 240);
+    dump_port(ctx.null_sink, 240, OMX_FALSE);
 
     say("Enter capture and encode loop, press Ctrl-C to quit...");
 
