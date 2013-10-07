@@ -15,15 +15,24 @@
  *
  * Short intro about this program:
  *
- * `rpi-camera-dump-yuv` records video using the RaspiCam module and dumps the raw
- * YUV frame data to `stdout`.
+ *  `rpi-camera-dump-yuv` records video using the RaspiCam module and dumps the raw
+ * YUV planar 4:2:0 ([I420](http://www.fourcc.org/yuv.php#IYUV)) data to `stdout`.
  *
  *     $ ./rpi-camera-dump-yuv >test.yuv
  *
  * `rpi-camera-dump-yuv` uses `camera` and `null_sink` components. Uncompressed
- * raw YUV frame data is read from the buffer of `camera` video output port and
- * dumped to stdout and `camera` preview output port is tunneled to `null_sink`
- * input port.
+ * YUV planar 4:2:0 ([I420](http://www.fourcc.org/yuv.php#IYUV)) frame data is
+ * read from the buffer of `camera` video output port and dumped to stdout and
+ * `camera` preview output port is tunneled to `null_sink`.
+ *
+ * However, the camera is sending a frame divided into multiple buffers. Each
+ * buffer contains a slice of the Y, U, and V planes. This means that the plane
+ * data is fragmented if printed out just as is. Search for the definition of
+ * `OMX_COLOR_FormatYUV420PackedPlanar` in the OpenMAX IL specification for more
+ * details. Thus in order to produce valid I420 data to output file, you first
+ * have to save the received buffers until the whole frame has been delivered
+ * unpacking the plane slices in the process. Then the whole frame can be written
+ * to output file.
  *
  * Please see README.mdwn for more detailed description of this
  * OpenMAX IL demos for Raspberry Pi bundle.

@@ -15,16 +15,24 @@
  *
  * Short intro about this program:
  *
- * `rpi-encode-yuv` reads raw YUV frame data from `stdin`, encodes the stream
- * using the VideoCore hardware encoder using H.264 codec and emits the H.264
- * stream to `stdout`.
+ * `rpi-encode-yuv` reads YUV planar 4:2:0 ([I420](http://www.fourcc.org/yuv.php#IYUV))
+ * frame data from `stdin`, encodes the stream using the VideoCore hardware
+ * encoder using H.264 codec and emits the H.264 stream to `stdout`.
  *
  *     $ ./rpi-encode-yuv <test.yuv >test.h264
  *
- * `rpi-encode-yuv` uses the `video_encode` component. Uncompressed raw YUV frame
- * data is read from `stdin` and passed to the buffer of input port of
- * `video_encode`. H.264 encoded video is read from the buffer of `video_encode`
- * output port and dumped to `stdout`.
+ * `rpi-encode-yuv` uses the `video_encode` component. Uncompressed YUV 4:2:0
+ * ([I420](http://www.fourcc.org/yuv.php#IYUV)) frame data is read from `stdin`
+ * and passed to the buffer of input port of `video_encode`. H.264 encoded video
+ * is read from the buffer of `video_encode` output port and dumped to `stdout`.
+ *
+ * But similarly as described above in the [rpi-camera-dump-yuv] section, also
+ * `video_encode` component requires its buffers to be formatted in
+ * `OMX_COLOR_FormatYUV420PackedPlanar`. Thus we need to pack the I420 data to the
+ * desired format while reading from input file and writing to `video_encode`
+ * input buffer. Luckily no buffering is required here, you can just read the data
+ * for each of the Y, U, and V planes directly to the `video_encode` input buffer
+ * with proper alignment between the planes in the buffer.
  *
  * Please see README.mdwn for more detailed description of this
  * OpenMAX IL demos for Raspberry Pi bundle.
