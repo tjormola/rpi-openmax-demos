@@ -92,6 +92,41 @@ typedef struct {
     VCOS_SEMAPHORE_T handler_lock;
 } appctx;
 
+// I420 frame stuff
+typedef struct {
+    int width;
+    int height;
+    size_t size;
+    int buf_stride;
+    int buf_slice_height;
+    int buf_extra_padding;
+    int p_offset[3];
+    int p_stride[3];
+} i420_frame_info;
+
+// Stolen from video-info.c of gstreamer-plugins-base
+#define ROUND_UP_2(num) (((num)+1)&~1)
+#define ROUND_UP_4(num) (((num)+3)&~3)
+static void get_i420_frame_info(int width, int height, int buf_stride, int buf_slice_height, i420_frame_info *info) {
+    info->p_stride[0] = ROUND_UP_4(width);
+    info->p_stride[1] = ROUND_UP_4(ROUND_UP_2(width) / 2);
+    info->p_stride[2] = info->p_stride[1];
+    info->p_offset[0] = 0;
+    info->p_offset[1] = info->p_stride[0] * ROUND_UP_2(height);
+    info->p_offset[2] = info->p_offset[1] + info->p_stride[1] * (ROUND_UP_2(height) / 2);
+    info->size = info->p_offset[2] + info->p_stride[2] * (ROUND_UP_2(height) / 2);
+    info->width = width;
+    info->height = height;
+    info->buf_stride = buf_stride;
+    info->buf_slice_height = buf_slice_height;
+    info->buf_extra_padding =
+        buf_slice_height >= 0
+        ? ((buf_slice_height && (height % buf_slice_height))
+             ? (buf_slice_height - (height % buf_slice_height))
+             : 0)
+        : -1;
+}
+
 // Ugly, stupid utility functions
 static void say(const char* message, ...) {
     va_list args;
@@ -138,6 +173,22 @@ static void omx_die(OMX_ERRORTYPE error, const char* message, ...) {
         default:                                e = "(no description)";
     }
     die("OMX error: %s: 0x%08x %s", str, error, e);
+}
+
+static void dump_frame_info(const char *message, const i420_frame_info *info) {
+    say("%s frame info:\n"
+        "\tWidth:\t\t\t%d\n"
+        "\tHeight:\t\t\t%d\n"
+        "\tSize:\t\t\t%d\n"
+        "\tBuffer stride:\t\t%d\n"
+        "\tBuffer slice height:\t%d\n"
+        "\tBuffer extra padding:\t%d\n"
+        "\tPlane strides:\t\tY:%d U:%d V:%d\n"
+        "\tPlane offsets:\t\tY:%d U:%d V:%d\n",
+            message,
+            info->width, info->height, info->size, info->buf_stride, info->buf_slice_height, info->buf_extra_padding,
+            info->p_stride[0], info->p_stride[1], info->p_stride[2],
+            info->p_offset[0], info->p_offset[1], info->p_offset[2]);
 }
 
 static void dump_event(OMX_HANDLETYPE hComponent, OMX_EVENTTYPE eEvent, OMX_U32 nData1, OMX_U32 nData2) {
@@ -753,9 +804,34 @@ int main(int argc, char **argv) {
     say("Configured port definition for null sink input port 240");
     dump_port(ctx.null_sink, 240, OMX_FALSE);
 
-    say("Enter capture loop, press Ctrl-C to quit...");
+    i420_frame_info frame_info, buf_info;
+    get_i420_frame_info(camera_portdef.format.image.nFrameWidth, camera_portdef.format.image.nFrameHeight, camera_portdef.format.image.nStride, camera_portdef.format.video.nSliceHeight, &frame_info);
+    get_i420_frame_info(frame_info.buf_stride, frame_info.buf_slice_height, -1, -1, &buf_info);
+    dump_frame_info("Destination frame", &frame_info);
+    dump_frame_info("Source buffer", &buf_info);
 
-    int quit_detected = 0, quit_in_frame_boundry = 0, frame = 1, need_next_buffer_to_be_filled = 1;
+    // Buffer representing an I420 frame where to unpack
+    // the fragmented Y, U, and V plane spans from the OMX buffers
+    char *frame = calloc(1, frame_info.size);
+    if(frame == NULL) {
+        die("Failed to allocate frame buffer");
+    }
+
+    // Some counters
+    int frame_num = 1, buf_num = 0;
+    size_t output_written, frame_bytes = 0, buf_size, buf_bytes_read = 0, buf_bytes_copied;
+    int i;
+    // I420 spec: U and V plane span size half of the size of the Y plane span size
+    int max_spans_y = buf_info.height, max_spans_uv = max_spans_y / 2;
+    int valid_spans_y, valid_spans_uv;
+    // For unpack memory copy operation
+    unsigned char *buf_start;
+    int max_spans, valid_spans;
+    int dst_offset, src_offset, span_size;
+    // For controlling the loop
+    int quit_detected = 0, quit_in_frame_boundry = 0, need_next_buffer_to_be_filled = 1;
+
+    say("Enter capture loop, press Ctrl-C to quit...");
 
     signal(SIGINT,  signal_handler);
     signal(SIGTERM, signal_handler);
@@ -775,18 +851,75 @@ int main(int argc, char **argv) {
                 quit_detected = 1;
                 quit_in_frame_boundry = ctx.camera_ppBuffer_out->nFlags & OMX_BUFFERFLAG_ENDOFFRAME;
             }
-            if(quit_detected && (quit_in_frame_boundry ^ (ctx.camera_ppBuffer_out->nFlags & OMX_BUFFERFLAG_ENDOFFRAME))) {
+            if(quit_detected &&
+                    (quit_in_frame_boundry ^
+                    (ctx.camera_ppBuffer_out->nFlags & OMX_BUFFERFLAG_ENDOFFRAME))) {
                 say("Frame boundry reached, exiting loop...");
                 break;
             }
-            if(ctx.camera_ppBuffer_out->nFlags & OMX_BUFFERFLAG_ENDOFFRAME) {
-                say("Captured frame %d\n", frame);
-                frame++;
+            // Start of the OMX buffer data
+            buf_start = ctx.camera_ppBuffer_out->pBuffer
+                + ctx.camera_ppBuffer_out->nOffset;
+            // Size of the OMX buffer data;
+            buf_size = ctx.camera_ppBuffer_out->nFilledLen;
+            buf_bytes_read += buf_size;
+            buf_bytes_copied = 0;
+            // Detect the possibly non-full buffer in the last buffer of a frame
+            valid_spans_y = max_spans_y
+                - ((ctx.camera_ppBuffer_out->nFlags & OMX_BUFFERFLAG_ENDOFFRAME)
+                    ? frame_info.buf_extra_padding
+                    : 0);
+            // I420 spec: U and V plane span size half of the size of the Y plane span size
+            valid_spans_uv = valid_spans_y / 2;
+            // Unpack Y, U, and V plane spans from the buffer to the I420 frame
+            for(i = 0; i < 3; i++) {
+                // Number of maximum and valid spans for this plane
+                max_spans   = (i == 0 ? max_spans_y   : max_spans_uv);
+                valid_spans = (i == 0 ? valid_spans_y : valid_spans_uv);
+                dst_offset =
+                    // Start of the plane span in the I420 frame
+                    frame_info.p_offset[i] +
+                    // Plane spans copied from the previous buffers
+                    (buf_num * frame_info.p_stride[i] * max_spans);
+                src_offset =
+                    // Start of the plane span in the buffer
+                    buf_info.p_offset[i];
+                span_size =
+                    // Plane span size multiplied by the available spans in the buffer
+                    frame_info.p_stride[i] * valid_spans;
+                memcpy(
+                    // Destination starts from the beginning of the frame and move forward by offset
+                    frame + dst_offset,
+                    // Source starts from the beginning of the OMX component buffer and move forward by offset
+                    buf_start + src_offset,
+                    // The final plane span size, possible padding at the end of
+                    // the plane span section in the buffer isn't included
+                    // since the size is based on the final frame plane span size
+                    span_size);
+                buf_bytes_copied += span_size;
             }
-            // Flush buffer to output file
-            size_t output_written = fwrite(ctx.camera_ppBuffer_out->pBuffer + ctx.camera_ppBuffer_out->nOffset, 1, ctx.camera_ppBuffer_out->nFilledLen, ctx.fd_out);
-            if(output_written != ctx.camera_ppBuffer_out->nFilledLen) {
-                die("Failed to write to output file");
+            frame_bytes += buf_bytes_copied;
+            buf_num++;
+            say("Read %d bytes from buffer %d of frame %d, copied %d bytes from %d Y spans and %d U/V spans available",
+                buf_size, buf_num, frame_num, buf_bytes_copied, valid_spans_y, valid_spans_uv);
+            if(ctx.camera_ppBuffer_out->nFlags & OMX_BUFFERFLAG_ENDOFFRAME) {
+                // Dump the complete I420 frame
+                say("Captured frame %d, %d packed bytes read, %d bytes unpacked, writing %d unpacked frame bytes",
+                    frame_num, buf_bytes_read, frame_bytes, frame_info.size);
+                if(frame_bytes != frame_info.size) {
+                    die("Frame bytes read %d doesn't match the frame size %d",
+                        frame_bytes, frame_info.size);
+                }
+                output_written = fwrite(frame, 1, frame_info.size, ctx.fd_out);
+                if(output_written != frame_info.size) {
+                    die("Failed to write to output file: Requested to write %d bytes, but only %d bytes written: %s",
+                        frame_info.size, output_written, strerror(errno));
+                }
+                frame_num++;
+                buf_num = 0;
+                buf_bytes_read = 0;
+                frame_bytes = 0;
+                memset(frame, 0, frame_info.size);
             }
             need_next_buffer_to_be_filled = 1;
         }
@@ -893,6 +1026,7 @@ int main(int argc, char **argv) {
 
     // Exit
     fclose(ctx.fd_out);
+    free(frame);
 
     vcos_semaphore_delete(&ctx.handler_lock);
     if((r = OMX_Deinit()) != OMX_ErrorNone) {

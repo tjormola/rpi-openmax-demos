@@ -81,6 +81,41 @@ typedef struct {
     VCOS_SEMAPHORE_T handler_lock;
 } appctx;
 
+// I420 frame stuff
+typedef struct {
+    int width;
+    int height;
+    size_t size;
+    int buf_stride;
+    int buf_slice_height;
+    int buf_extra_padding;
+    int p_offset[3];
+    int p_stride[3];
+} i420_frame_info;
+
+// Stolen from video-info.c of gstreamer-plugins-base
+#define ROUND_UP_2(num) (((num)+1)&~1)
+#define ROUND_UP_4(num) (((num)+3)&~3)
+static void get_i420_frame_info(int width, int height, int buf_stride, int buf_slice_height, i420_frame_info *info) {
+    info->p_stride[0] = ROUND_UP_4(width);
+    info->p_stride[1] = ROUND_UP_4(ROUND_UP_2(width) / 2);
+    info->p_stride[2] = info->p_stride[1];
+    info->p_offset[0] = 0;
+    info->p_offset[1] = info->p_stride[0] * ROUND_UP_2(height);
+    info->p_offset[2] = info->p_offset[1] + info->p_stride[1] * (ROUND_UP_2(height) / 2);
+    info->size = info->p_offset[2] + info->p_stride[2] * (ROUND_UP_2(height) / 2);
+    info->width = width;
+    info->height = height;
+    info->buf_stride = buf_stride;
+    info->buf_slice_height = buf_slice_height;
+    info->buf_extra_padding =
+        buf_slice_height >= 0
+        ? ((buf_slice_height && (height % buf_slice_height))
+             ? (buf_slice_height - (height % buf_slice_height))
+             : 0)
+        : -1;
+}
+
 // Ugly, stupid utility functions
 static void say(const char* message, ...) {
     va_list args;
@@ -127,6 +162,22 @@ static void omx_die(OMX_ERRORTYPE error, const char* message, ...) {
         default:                                e = "(no description)";
     }
     die("OMX error: %s: 0x%08x %s", str, error, e);
+}
+
+static void dump_frame_info(const char *message, const i420_frame_info *info) {
+    say("%s frame info:\n"
+        "\tWidth:\t\t\t%d\n"
+        "\tHeight:\t\t\t%d\n"
+        "\tSize:\t\t\t%d\n"
+        "\tBuffer stride:\t\t%d\n"
+        "\tBuffer slice height:\t%d\n"
+        "\tBuffer extra padding:\t%d\n"
+        "\tPlane strides:\t\tY:%d U:%d V:%d\n"
+        "\tPlane offsets:\t\tY:%d U:%d V:%d\n",
+            message,
+            info->width, info->height, info->size, info->buf_stride, info->buf_slice_height, info->buf_extra_padding,
+            info->p_stride[0], info->p_stride[1], info->p_stride[2],
+            info->p_offset[0], info->p_offset[1], info->p_offset[2]);
 }
 
 static void dump_event(OMX_HANDLETYPE hComponent, OMX_EVENTTYPE eEvent, OMX_U32 nData1, OMX_U32 nData2) {
@@ -605,9 +656,24 @@ int main(int argc, char **argv) {
     say("Configured port definition for encoder output port 201");
     dump_port(ctx.encoder, 201, OMX_FALSE);
 
+    i420_frame_info frame_info, buf_info;
+    get_i420_frame_info(encoder_portdef.format.image.nFrameWidth, encoder_portdef.format.image.nFrameHeight, encoder_portdef.format.image.nStride, encoder_portdef.format.video.nSliceHeight, &frame_info);
+    get_i420_frame_info(frame_info.buf_stride, frame_info.buf_slice_height, -1, -1, &buf_info);
+
+    dump_frame_info("Destination frame", &frame_info);
+    dump_frame_info("Source buffer", &buf_info);
+
+    if(ctx.encoder_ppBuffer_in->nAllocLen != buf_info.size) {
+        die("Allocated encoder input port 200 buffer size %d doesn't equal to the expected buffer size %d", ctx.encoder_ppBuffer_in->nAllocLen, buf_info.size);
+    }
+
     say("Enter encode loop, press Ctrl-C to quit...");
 
-    int input_available = 1, frame_in = 0, frame_out = 0;
+    int input_available = 1, frame_in = 0, frame_out = 0, i;
+    size_t input_total_read, want_read, input_read, output_written;
+    // I420 spec: U and V plane span size half of the size of the Y plane span size
+    int plane_span_y = ROUND_UP_2(frame_info.height), plane_span_uv = plane_span_y / 2;
+
     ctx.encoder_input_buffer_needed = 1;
 
     signal(SIGINT,  signal_handler);
@@ -618,20 +684,31 @@ int main(int argc, char **argv) {
         // empty_input_buffer_done_handler() has marked that there's
         // a need for a buffer to be filled by us
         if(ctx.encoder_input_buffer_needed && input_available) {
-            ctx.encoder_ppBuffer_in->nFilledLen = (OMX_U32)fread(ctx.encoder_ppBuffer_in->pBuffer, 1, (size_t)ctx.encoder_ppBuffer_in->nAllocLen, ctx.fd_in);
+            input_total_read = 0;
+            memset(ctx.encoder_ppBuffer_in->pBuffer, 0, ctx.encoder_ppBuffer_in->nAllocLen);
+            // Pack Y, U, and V plane spans read from input file to the buffer
+            for(i = 0; i < 3; i++) {
+                want_read = frame_info.p_stride[i] * (i == 0 ? plane_span_y : plane_span_uv);
+                input_read = fread(
+                    ctx.encoder_ppBuffer_in->pBuffer + buf_info.p_offset[i],
+                    1, want_read, ctx.fd_in);
+                input_total_read += input_read;
+                if(input_read != want_read) {
+                    ctx.encoder_ppBuffer_in->nFlags = OMX_BUFFERFLAG_EOS;
+                    want_quit = 1;
+                    say("Input file EOF");
+                    break;
+                }
+            }
             ctx.encoder_ppBuffer_in->nOffset = 0;
+            ctx.encoder_ppBuffer_in->nFilledLen = (buf_info.size - frame_info.size) + input_total_read;
             frame_in++;
             say("Read from input file and wrote to input buffer %d/%d, frame %d", ctx.encoder_ppBuffer_in->nFilledLen, ctx.encoder_ppBuffer_in->nAllocLen, frame_in);
-            if(ctx.encoder_ppBuffer_in->nFilledLen < ctx.encoder_ppBuffer_in->nAllocLen) {
-                ctx.encoder_ppBuffer_in->nFlags = OMX_BUFFERFLAG_EOS;
-                want_quit = 1;
-                say("Input file EOF");
-            }
             // Mark input unavailable also if the signal handler was triggered
             if(want_quit) {
                 input_available = 0;
             }
-            if(ctx.encoder_ppBuffer_in->nFilledLen > 0) {
+            if(input_total_read > 0) {
                 ctx.encoder_input_buffer_needed = 0;
                 if((r = OMX_EmptyThisBuffer(ctx.encoder, ctx.encoder_ppBuffer_in)) != OMX_ErrorNone) {
                     omx_die(r, "Failed to request emptying of the input buffer on encoder input port 200");
@@ -645,7 +722,7 @@ int main(int argc, char **argv) {
                 frame_out++;
             }
             // Flush buffer to output file
-            size_t output_written = fwrite(ctx.encoder_ppBuffer_out->pBuffer + ctx.encoder_ppBuffer_out->nOffset, 1, ctx.encoder_ppBuffer_out->nFilledLen, ctx.fd_out);
+            output_written = fwrite(ctx.encoder_ppBuffer_out->pBuffer + ctx.encoder_ppBuffer_out->nOffset, 1, ctx.encoder_ppBuffer_out->nFilledLen, ctx.fd_out);
             if(output_written != ctx.encoder_ppBuffer_out->nFilledLen) {
                 die("Failed to write to output file: %s", strerror(errno));
             }
@@ -661,7 +738,7 @@ int main(int argc, char **argv) {
         // Don't exit the loop until all the input frames have been encoded.
         // Out frame count is larger than in frame count because 2 header
         // frames are emitted in the beginning.
-        if(want_quit && frame_out == frame_in + 1) {
+        if(want_quit && frame_out == frame_in) {
             break;
         }
         // Would be better to use signaling here but hey this works too
